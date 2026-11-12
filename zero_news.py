@@ -98,6 +98,7 @@ def render_card(items, idx, now, paused=False, status=None):
         d.text((12, 46), 'No news yet', font=cjk(20, True), fill=FG)
         d.text((12, 78), 'Fetching feeds…' if status != 'offline' else 'Offline, retrying soon',
                font=cjk(14), fill=DIM)
+        draw_hints(d, CARD_H - 22, (('S', 'settings'), ('R', 'refresh'), ('ESC', 'exit')))
         return img
 
     item = items[idx]
@@ -144,14 +145,31 @@ def build_ticker(items, idx, count=6):
     return label, strip
 
 
-def render_band(ticker, offset, progress, paused=False):
-    """The bottom W x BAND_H part: progress bar and the scrolling ticker."""
+def draw_hints(d, y, hints):
+    """Key caps with labels in one row starting at (8, y), 20px tall."""
+    x = 8
+    for key, label in hints:
+        kw = d.textlength(key, font=mono(10, True)) + 8
+        d.rounded_rectangle((x, y + 3, x + kw, y + 17), radius=3, fill=DIM)
+        d.text((x + kw / 2, y + 10), key, font=mono(10, True), fill=BG, anchor='mm')
+        x += kw + 4
+        d.text((x, y + 10), label, font=cjk(12), fill=FG, anchor='lm')
+        x += d.textlength(label, font=cjk(12)) + 9
+
+
+def render_band(ticker, offset, progress, paused=False, hints=False):
+    """The bottom W x BAND_H part: progress bar, then the scrolling ticker or,
+    when hints is set, the main keys."""
     label, strip = ticker
     img = Image.new('RGB', (W, BAND_H), BAND)
     d = ImageDraw.Draw(img)
     d.rectangle((0, 0, W, 1), fill=LINE)
     if progress > 0:
         d.rectangle((0, 0, int(W * min(1, progress)), 1), fill=DIM if paused else ACCENT)
+    if hints:
+        draw_hints(d, 3, (('F/X', 'prev/next'), ('OK', 'read'),
+                          ('P', 'resume' if paused else 'pause'), ('S', 'settings')))
+        return img
     view = W - LABEL_W
     x = -(int(offset) % strip.width)
     while x < view:
@@ -284,6 +302,7 @@ class App:
         self.items = self.load_items()
         self.idx, self.paused, self.detail, self.panel = 0, False, None, None
         self.show(0, now)
+        self.hinting = True  # key hints replace the ticker until the first change of story
 
     @property
     def interval(self):
@@ -297,12 +316,15 @@ class App:
         self.shown_at = now
         self.ticker = build_ticker(self.items, self.idx) if self.items else None
         self.card_key = None
+        self.hinting = False
 
     def reload(self, now):
         link = self.items[self.idx].get('link') if self.items else None
         self.items = self.load_items()
         links = [i.get('link') for i in self.items]
+        hinting = self.hinting
         self.show(links.index(link) if link in links else 0, now)
+        self.hinting = hinting
 
     def close_overlay(self, now):
         self.detail = self.panel = None
@@ -403,7 +425,8 @@ def run():
                     offset = 0 if app.paused else max(0, elapsed - TICKER_DELAY) * TICKER_SPEED
                     progress = 1 if app.paused else elapsed / app.interval
                     fb.seek(CARD_H * W * 2)
-                    fb.write(to_rgb565(render_band(app.ticker, offset, progress, app.paused)))
+                    fb.write(to_rgb565(render_band(app.ticker, offset, progress, app.paused,
+                                                   app.paused or app.hinting)))
                 time.sleep(FRAME)
         except KeyboardInterrupt:
             pass
@@ -428,14 +451,18 @@ def preview(out, fetch_now=False):
     settings, now = feeds.load_settings(), time.time()
     stem = out.rsplit('.', 1)[0]
 
-    def frame(items, idx, offset, progress, paused=False):
+    def frame(items, idx, offset, progress, paused=False, hints=False):
         img = Image.new('RGB', (W, H), BG)
         img.paste(render_card(items, idx, now, paused), (0, 0))
-        img.paste(render_band(build_ticker(items, idx), offset, progress, paused), (0, CARD_H))
+        img.paste(render_band(build_ticker(items, idx), offset, progress, paused, hints or paused),
+                  (0, CARD_H))
         return img
 
     items = feeds.items_for(cache, feeds.selected_feeds(settings))
     frame(items, 0, 140, 0.45).save(out)
+    frame(items, 0, 0, 0.3, hints=True).save(f'{stem}-hints.png')
+    frame(items, 0, 0, 1, paused=True).save(f'{stem}-paused.png')
+    render_card([], 0, now).save(f'{stem}-empty.png')
     pick = next((i for i, it in enumerate(items) if len(it.get('summary', '')) > 150), 0)
     detail_frame(render_detail(items[pick], now), 0, items[pick], now).save(f'{stem}-detail.png')
     for name, langs, cats in PREVIEW_COMBOS:

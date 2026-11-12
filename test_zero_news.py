@@ -199,6 +199,18 @@ class AppTests(unittest.TestCase):
         app.tick(110)
         self.assertEqual(app.idx, 0)
 
+    def test_hints_until_first_story_change(self):
+        app, f = self.make(), mock.Mock(busy=False)
+        self.assertTrue(app.hinting)
+        with mock.patch.object(zn.App, 'load_items', return_value=list(app.items)):
+            app.reload(1)  # first fetch finishing keeps the hints
+        self.assertTrue(app.hinting)
+        app.tick(11)
+        self.assertFalse(app.hinting)
+        app2 = self.make()
+        app2.key(zn.K_DOWN, 0, f)
+        self.assertFalse(app2.hinting)
+
     def test_keys(self):
         app, f = self.make(), mock.Mock(busy=False)
         app.key(zn.K_UP, 0, f)
@@ -254,6 +266,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(zn.render_card(app.items, 1, 2000).size, (zn.W, zn.CARD_H))
         self.assertEqual(zn.render_card([], 0, 0, status='offline').size, (zn.W, zn.CARD_H))
         band = zn.render_band(zn.build_ticker(app.items, 0), 12345, 0.5)
+        self.assertEqual(zn.render_band(zn.build_ticker(app.items, 0), 0, 1, True, True).size,
+                         (zn.W, zn.BAND_H))
         self.assertEqual(band.size, (zn.W, zn.BAND_H))
         self.assertEqual(len(zn.to_rgb565(band)), zn.W * zn.BAND_H * 2)
         tall = zn.render_detail(app.items[1], 2000)
