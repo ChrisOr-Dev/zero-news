@@ -107,7 +107,7 @@ class Settings:
         d.line((12, 144, W - 12, 144), fill=LINE)
         n = len(feeds.selected_feeds(self.s))
         d.text((12, 157), f'{n} sources', font=mono(11), fill=DIM, anchor='lm')
-        keys = 'arrows move  ENTER toggle'
+        keys = 'F/Z/X/C move  OK toggle'
         d.text((W - 12 - d.textlength(keys, font=mono(10)), 157), keys, font=mono(10),
                fill=DIM, anchor='lm')
         return img

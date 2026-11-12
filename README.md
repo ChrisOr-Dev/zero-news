@@ -20,18 +20,20 @@ The default is both languages, Tech only, rotating every 12 seconds.
 
 ## Keys
 
+As the CardputerZero key spec recommends, plain F / Z / X / C work as arrow keys.
+
 | Screen | Key | Action |
 |--------|-----|--------|
-| Main | UP / DOWN | Previous / next headline |
-| Main | ENTER | Full summary |
+| Main | F / X (or Fn+F / Fn+X) | Previous / next headline |
+| Main | OK (ENTER) | Full summary |
 | Main | P / SPACE | Pause rotation |
 | Main | R | Refresh now |
 | Main | S | Settings |
 | Main | ESC / Q | Exit |
-| Details | UP / DOWN | Scroll |
-| Details | ESC / ENTER | Back |
-| Settings | Arrows | Move (LEFT / RIGHT change the rotation speed) |
-| Settings | ENTER / SPACE | Toggle |
+| Details | F / X | Scroll |
+| Details | ESC / OK | Back |
+| Settings | F / Z / X / C | Move up / left / down / right (Z / C change the rotation speed) |
+| Settings | OK / SPACE | Toggle |
 | Settings | ESC | Save and back |
 
 ## Install

@@ -260,6 +260,19 @@ class AppTests(unittest.TestCase):
         self.assertEqual(zn.detail_frame(tall, 0, app.items[1], 2000).size, (zn.W, zn.H))
 
 
+class KeyTests(unittest.TestCase):
+    def test_fzxc_act_as_arrows(self):
+        import os
+        import struct
+        r, w = os.pipe()
+        os.set_blocking(r, False)
+        self.addCleanup(os.close, r)
+        for code, value in ((33, 1), (33, 0), (44, 1), (45, 1), (46, 1), (31, 1), (103, 1)):
+            os.write(w, struct.pack('llHHi', 0, 0, 1, code, value))
+        os.close(w)
+        self.assertEqual(zn.read_keys(r), [zn.K_UP, zn.K_LEFT, zn.K_DOWN, zn.K_RIGHT, zn.K_S, zn.K_UP])
+
+
 class SettingsScreenTests(unittest.TestCase):
     def make(self):
         from settings_ui import Settings

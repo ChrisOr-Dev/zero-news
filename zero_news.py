@@ -37,6 +37,9 @@ FB = '/dev/fb0'
 KBD = '/dev/input/cardputer-zero-internal'
 K_ESC, K_BACKSPACE, K_Q, K_R, K_P, K_ENTER, K_S, K_SPACE = 1, 14, 16, 19, 25, 28, 31, 57
 K_UP, K_LEFT, K_RIGHT, K_DOWN = 103, 105, 106, 108
+# Per the CardputerZero key spec, plain F/Z/X/C act as arrows outside text
+# input (Fn+F/Z/X/C sends the arrow codes themselves).
+ARROW_ALIASES = {33: K_UP, 44: K_LEFT, 45: K_DOWN, 46: K_RIGHT}
 
 BG = (12, 15, 22)
 FG = (240, 242, 246)
@@ -186,7 +189,7 @@ def detail_frame(tall, scroll, item, now):
     d = ImageDraw.Draw(img)
     d.rectangle((0, 0, W, 24), fill=BG)
     draw_source(d, item, now)
-    hint = 'ESC back'
+    hint = 'F/X scroll  ESC'
     d.text((W - 12 - d.textlength(hint, font=mono(11)), 12), hint, font=mono(11), fill=DIM, anchor='lm')
     d.line((12, 24, W - 12, 24), fill=LINE)
     if tall.height > H:
@@ -240,7 +243,7 @@ def read_keys(fd):
     for i in range(0, len(buf) - size + 1, size):
         _, _, etype, code, value = struct.unpack_from('llHHi', buf, i)
         if etype == 1 and value == 1:
-            pressed.append(code)
+            pressed.append(ARROW_ALIASES.get(code, code))
     return pressed
 
 
