@@ -4,6 +4,8 @@ Rotating news headlines on the M5Stack CardputerZero's 320x170 screen. One headl
 
 ![Main screen](screenshots/main.png) ![Chinese headline](screenshots/chinese.png)
 
+[Demo video](screenshots/demo.mp4) (24 s, recorded on the device)
+
 ## Sources
 
 Press S to choose languages (English, Chinese) and categories (Tech, Life, General). Each combination has its own feeds:
