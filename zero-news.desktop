@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=News
+Comment=Rotating news headlines from RSS feeds
+Exec=/usr/share/APPLaunch/bin/zero-news
+Icon=share/images/zero-news.png
+Terminal=false
+Categories=Utility;
+StartupNotify=false
