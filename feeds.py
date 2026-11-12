@@ -4,11 +4,13 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urljoin, urlparse
 
 HOME = os.path.expanduser('~')
 CONFIG = os.path.join(HOME, '.config/zero-news.json')
@@ -21,9 +23,12 @@ SUMMARY_MAX = 400
 
 LANGUAGES = ['en', 'zh']
 CATEGORIES = ['tech', 'life', 'general']
-TAGS = {'tech': 'TECH', 'life': 'LIFE', 'general': 'NEWS'}
+TAGS = {'tech': 'TECH', 'life': 'LIFE', 'general': 'NEWS', 'mine': 'MY'}
 INTERVALS = [8, 12, 20, 30, 60]
-DEFAULT_SETTINGS = {'languages': ['en', 'zh'], 'categories': ['tech'], 'interval': 12}
+MAX_MY_FEEDS = 10
+# my_feeds: RSS feeds added in the app, [{'name', 'short', 'url'}], always shown
+DEFAULT_SETTINGS = {'languages': ['en', 'zh'], 'categories': ['tech'], 'interval': 12,
+                    'my_feeds': []}
 
 
 def _f(lang, cat, name, short, url, **extra):
@@ -71,7 +76,7 @@ def _read_config():
 
 
 def load_settings():
-    """{'languages', 'categories', 'interval'} from ~/.config/zero-news.json, else defaults."""
+    """DEFAULT_SETTINGS keys from ~/.config/zero-news.json, else defaults."""
     raw = _read_config()
     s = {k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULT_SETTINGS.items()}
     for key, allowed in (('languages', LANGUAGES), ('categories', CATEGORIES)):
@@ -80,6 +85,11 @@ def load_settings():
             s[key] = got
     if raw.get('interval') in INTERVALS:
         s['interval'] = raw['interval']
+    mine = raw.get('my_feeds') if isinstance(raw.get('my_feeds'), list) else []
+    s['my_feeds'] = [{'name': str(f['name']), 'short': str(f.get('short') or f['name'])[:12],
+                      'url': f['url']} for f in mine
+                     if isinstance(f, dict) and isinstance(f.get('url'), str) and f.get('name')
+                     ][:MAX_MY_FEEDS]
     return s
 
 
@@ -108,10 +118,12 @@ def catalog():
 
 def selected_feeds(settings, feeds=None):
     """Feeds matching the chosen languages and categories (a feed without
-    lang/cat matches any)."""
-    return [f for f in (feeds if feeds is not None else catalog())
-            if f.get('lang', settings['languages'][0]) in settings['languages']
-            and f.get('cat', settings['categories'][0]) in settings['categories']]
+    lang/cat matches any), then the user's own feeds."""
+    out = [f for f in (feeds if feeds is not None else catalog())
+           if f.get('lang', settings['languages'][0]) in settings['languages']
+           and f.get('cat', settings['categories'][0]) in settings['categories']]
+    urls = {f['url'] for f in out}
+    return out + [dict(f, cat='mine') for f in settings.get('my_feeds', []) if f['url'] not in urls]
 
 
 CJK = re.compile(r'[　-鿿＀-￯]')
@@ -214,6 +226,63 @@ def fetch_feed(feed):
     req = urllib.request.Request(feed['url'], headers={'User-Agent': USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return parse_feed(r.read(), feed)
+
+
+FEED_LINK = re.compile(r'<link\b[^>]*type=["\']application/(?:rss|atom)\+xml["\'][^>]*>', re.I)
+
+
+def _get(url):
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        return r.geturl(), r.read(2_000_000)
+
+
+def _xml(raw):
+    """The root of an RSS / Atom / RDF document, else None (web pages, XHTML)."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return None
+    return root if _local(root.tag) in ('rss', 'feed', 'RDF') else None
+
+
+def probe(url):
+    """Check a URL the user typed: {'name', 'short', 'url'} of the feed it is,
+    or of the feed its web page links to (else its /feed, as on WordPress).
+    Raises ValueError with a short message."""
+    url = url.strip()
+    if '://' not in url:
+        url = 'https://' + url
+    no_feed = 'No RSS feed found'
+    try:
+        final, raw = _get(url)
+        root = _xml(raw)
+        if root is None:
+            m = FEED_LINK.search(raw[:300_000].decode('utf-8', 'replace'))
+            href = m and re.search(r'href=["\']([^"\']+)', m.group(0))
+            url = urljoin(final, html.unescape(href.group(1)) if href else '/feed')
+            try:
+                final, raw = _get(url)
+            except urllib.error.HTTPError:
+                raise ValueError(no_feed)
+            root = _xml(raw)
+            if root is None:
+                raise ValueError(no_feed)
+    except ValueError:
+        raise
+    except Exception as e:
+        reason = getattr(e, 'reason', e)
+        msg = (f'Server error {e.code}' if hasattr(e, 'code') else
+               'Address not found' if 'name' in str(reason) or 'resolution' in str(reason) else
+               'Timed out' if 'timed out' in str(reason) else 'Could not connect')
+        raise ValueError(msg)
+    channel = _child(root, 'channel')
+    name = clean_text(_text(channel if channel is not None else root, 'title'))
+    name = name or urlparse(url).netloc.removeprefix('www.')
+    feed = {'name': name[:40], 'short': name[:12].rstrip(' :-|·'), 'url': final}
+    if not parse_feed(raw, feed):
+        raise ValueError('Feed has no headlines')
+    return feed
 
 
 def merge(per_feed):

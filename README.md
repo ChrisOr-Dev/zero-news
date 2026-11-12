@@ -16,6 +16,12 @@ Press S to choose languages (English, Chinese) and categories (Tech, Life, Gener
 
 The default is both languages, Tech only, rotating every 12 seconds.
 
+### My feeds
+
+Settings > My feeds adds your own RSS feeds on the device, on top of the built-in ones (up to 10, tagged MY, shown whatever languages and categories are chosen). Type a feed address such as `hnrss.org/newest`, or just a website such as `theverge.com`: `https://` is added for you, and a website works if its page links to its RSS feed or it serves one at `/feed` (WordPress). The feed is checked before it is added and named after its own title.
+
+![My feeds](screenshots/my-feeds.png)
+
 ![Settings](screenshots/settings.png) ![Details](screenshots/detail.png)
 
 ## Keys
@@ -29,12 +35,15 @@ As the CardputerZero key spec recommends, plain F / Z / X / C work as arrow keys
 | Main | P / SPACE | Pause rotation |
 | Main | R | Refresh now |
 | Main | S | Settings |
-| Main | ESC / Q | Exit |
+| Main | Hold ESC 3 s | Exit (a bar shows the countdown; let go to cancel) |
 | Details | F / X | Scroll |
 | Details | ESC / OK | Back |
 | Settings | F / Z / X / C | Move up / left / down / right (Z / C change the rotation speed) |
-| Settings | OK / SPACE | Toggle |
+| Settings | OK / SPACE | Toggle, or open My feeds |
 | Settings | ESC | Save and back |
+| My feeds | OK on "+ Add RSS feed" | Type an address, OK to check and add |
+| My feeds | DEL twice | Remove the selected feed |
+| Typing | Shift + key | Capitals and symbols (Shift+; is `:`) |
 
 ## Install
 
@@ -54,7 +63,8 @@ Requires `python3`, `python3-pil` and `python3-numpy`. Text uses the Noto Sans C
 Settings are stored in `~/.config/zero-news.json`:
 
 ```json
-{"languages": ["en", "zh"], "categories": ["tech"], "interval": 12}
+{"languages": ["en", "zh"], "categories": ["tech"], "interval": 12,
+ "my_feeds": [{"name": "Hacker News: Newest", "short": "Hacker News", "url": "https://hnrss.org/newest"}]}
 ```
 
 To use your own feeds instead of the built-in list, add a `feeds` array. Entries with `lang` (`en` / `zh`) and `cat` (`tech` / `life` / `general`) follow the settings; entries without them are always shown:

@@ -4,6 +4,7 @@ from unittest import mock
 from PIL import Image, ImageDraw
 
 import feeds
+import keys
 import zero_news as zn
 
 FEED = {'name': 'Test', 'short': 'T', 'tag': 'TECH', 'url': 'u'}
@@ -108,6 +109,15 @@ class FeedTests(unittest.TestCase):
                     len(feeds.selected_feeds({'languages': [lang], 'categories': [cat]})), 4)
         bare = [{'name': 'x', 'url': 'u'}]  # custom feed without lang/cat matches anything
         self.assertEqual(feeds.selected_feeds({'languages': ['zh'], 'categories': ['life']}, bare), bare)
+        mine = {'name': 'Blog', 'short': 'Blog', 'url': 'https://b/rss'}
+        dup = {'name': 'HN', 'short': 'HN', 'url': feeds.CATALOG[0]['url']}
+        got = feeds.selected_feeds({'languages': ['zh'], 'categories': ['life'],
+                                    'my_feeds': [mine]})
+        self.assertEqual(got[-1], dict(mine, cat='mine'))  # always shown, tagged MY
+        self.assertEqual(feeds.TAGS[got[-1]['cat']], 'MY')
+        got = feeds.selected_feeds({'languages': ['en'], 'categories': ['tech'],
+                                    'my_feeds': [dup]})  # already a selected built-in feed
+        self.assertEqual(sum(f['url'] == dup['url'] for f in got), 1)
 
 
 class ConfigTests(unittest.TestCase):
@@ -140,10 +150,44 @@ class ConfigTests(unittest.TestCase):
 
     def test_save_keeps_custom_feeds(self):
         self.write('{"feeds": [{"name": "Mine", "url": "https://m"}, {"name": "no url"}]}')
-        feeds.save_settings({'languages': ['zh'], 'categories': ['tech'], 'interval': 30})
-        self.assertEqual(feeds.load_settings(),
-                         {'languages': ['zh'], 'categories': ['tech'], 'interval': 30})
+        mine = [{'name': 'Blog', 'short': 'Blog', 'url': 'https://b/rss'}]
+        feeds.save_settings({'languages': ['zh'], 'categories': ['tech'], 'interval': 30,
+                             'my_feeds': mine})
+        self.assertEqual(feeds.load_settings(), {'languages': ['zh'], 'categories': ['tech'],
+                                                 'interval': 30, 'my_feeds': mine})
         self.assertEqual(feeds.catalog(), [{'name': 'Mine', 'url': 'https://m', 'short': 'Mine'}])
+
+    def test_invalid_my_feeds_dropped(self):
+        self.write('{"my_feeds": [{"name": "A", "url": "https://a"}, {"name": "no url"}, 5,'
+                   ' {"url": "https://noname"}]}')
+        self.assertEqual(feeds.load_settings()['my_feeds'],
+                         [{'name': 'A', 'short': 'A', 'url': 'https://a'}])
+
+
+class ProbeTests(unittest.TestCase):
+    RSS = b'<rss><channel><title>My Blog</title><item><title>Hi</title></item></channel></rss>'
+
+    def run_probe(self, url, pages):
+        def get(u):
+            if u not in pages:
+                import urllib.error
+                raise urllib.error.HTTPError(u, 404, 'nf', {}, None)
+            return u, pages[u]
+        with mock.patch.object(feeds, '_get', side_effect=get):
+            return feeds.probe(url)
+
+    def test_feed_page_link_and_wordpress_fallback(self):
+        self.assertEqual(self.run_probe('b.com/rss', {'https://b.com/rss': self.RSS}),
+                         {'name': 'My Blog', 'short': 'My Blog', 'url': 'https://b.com/rss'})
+        page = b'<html><link rel="alternate" type="application/rss+xml" href="/x.xml"></html>'
+        got = self.run_probe('https://b.com', {'https://b.com': page, 'https://b.com/x.xml': self.RSS})
+        self.assertEqual(got['url'], 'https://b.com/x.xml')
+        got = self.run_probe('b.com', {'https://b.com': b'<html></html>', 'https://b.com/feed': self.RSS})
+        self.assertEqual(got['url'], 'https://b.com/feed')
+        with self.assertRaisesRegex(ValueError, 'No RSS feed'):
+            self.run_probe('b.com', {'https://b.com': b'<html></html>'})
+        with self.assertRaisesRegex(ValueError, 'no headlines'):
+            self.run_probe('b.com', {'https://b.com': b'<rss><channel><title>t</title></channel></rss>'})
 
 
 class TextTests(unittest.TestCase):
@@ -226,7 +270,45 @@ class AppTests(unittest.TestCase):
         self.assertIsNone(app.detail)
         app.key(zn.K_R, 0, f)
         f.wake.set.assert_called_once()
-        self.assertFalse(app.key(zn.K_ESC, 0, f))
+        app.key(33, 0, f)  # plain F is up
+        self.assertEqual(app.idx, 0)
+
+    def test_hold_esc_to_exit(self):
+        app, f = self.make(), mock.Mock(busy=False)
+        self.assertIsNone(app.exit_progress(0))
+        self.assertTrue(app.key(zn.K_Q, 0, f))  # Q no longer quits
+        with mock.patch('keys.is_down', return_value=True):
+            app.key(zn.K_ESC, 10, f)
+            self.assertAlmostEqual(app.exit_progress(11.5), 0.5)
+            self.assertGreaterEqual(app.exit_progress(13), 1)
+        down = mock.patch('keys.is_down', return_value=True)
+        up = mock.patch('keys.is_down', return_value=False)
+        app = self.make()
+        with down:  # a short bounce (finger moves) keeps counting from the first press
+            app.key(zn.K_ESC, 20, f)
+            app.exit_progress(20.5)
+        with up:
+            self.assertAlmostEqual(app.exit_progress(21), 1 / 3)
+            self.assertAlmostEqual(app.exit_progress(21.3), 1.3 / 3)
+        with down:
+            app.key(zn.K_ESC, 21.35, f)
+            self.assertGreaterEqual(app.exit_progress(23), 1)
+        app = self.make()
+        with down:  # let go for longer than the grace time: cancelled
+            app.key(zn.K_ESC, 25, f)
+        with up:
+            app.exit_progress(26)
+            self.assertIsNotNone(app.exit_progress(26 + zn.ESC_GRACE - 0.05))
+            self.assertIsNone(app.exit_progress(26 + zn.ESC_GRACE + 0.05))
+            self.assertIsNone(app.esc_at)
+        app = self.make()
+        with mock.patch('keys.is_down', return_value=True):  # ESC that closes details does not count
+            app.key(zn.K_ENTER, 30, f)
+            app.key(zn.K_ESC, 30, f)
+            self.assertIsNone(app.detail)
+            self.assertIsNone(app.exit_progress(40))
+        for progress in (0, 0.001, 0.4, 1.2):  # first frame after ESC is progress 0
+            self.assertEqual(zn.render_exit(progress).size, (zn.W, zn.BAND_H))
 
     def test_reload_keeps_current_story(self):
         app = self.make()
@@ -275,22 +357,40 @@ class AppTests(unittest.TestCase):
 
 
 class KeyTests(unittest.TestCase):
-    def test_fzxc_act_as_arrows(self):
+    def events(self, *pairs):
         import os
         import struct
         r, w = os.pipe()
         os.set_blocking(r, False)
         self.addCleanup(os.close, r)
-        for code, value in ((33, 1), (33, 0), (44, 1), (45, 1), (46, 1), (31, 1), (103, 1)):
+        for code, value in pairs:
             os.write(w, struct.pack('llHHi', 0, 0, 1, code, value))
         os.close(w)
-        self.assertEqual(zn.read_keys(r), [zn.K_UP, zn.K_LEFT, zn.K_DOWN, zn.K_RIGHT, zn.K_S, zn.K_UP])
+        return keys.read_keys(r)
+
+    def test_fzxc_act_as_arrows(self):
+        got = self.events((33, 1), (33, 0), (44, 1), (45, 1), (46, 1), (31, 1), (103, 1))
+        self.assertEqual([keys.nav(c) for c in got],
+                         [zn.K_UP, zn.K_LEFT, zn.K_DOWN, zn.K_RIGHT, zn.K_S, zn.K_UP])
+        self.assertEqual([keys.to_char(c) for c in got[:4]], ['f', 'z', 'x', 'c'])
+
+    def test_shift_and_held_keys(self):
+        got = self.events((42, 1), (39, 1), (39, 0), (53, 1), (53, 0), (35, 1), (35, 0),
+                          (42, 0), (53, 1), (1, 1))
+        self.assertEqual(''.join(keys.to_char(c) for c in got[:4]), ':?H/')
+        self.assertTrue(keys.is_down(53))
+        self.assertTrue(keys.is_down(1))
+        self.assertFalse(keys.is_down(42))
+        self.assertEqual(keys.nav(got[0]), 39)
+        self.events((53, 0), (1, 0))
+        self.assertFalse(keys.is_down(1))
 
 
 class SettingsScreenTests(unittest.TestCase):
     def make(self):
         from settings_ui import Settings
-        return Settings({'languages': ['en'], 'categories': ['tech'], 'interval': 12})
+        return Settings({'languages': ['en'], 'categories': ['tech'], 'interval': 12,
+                         'my_feeds': []})
 
     def test_navigation(self):
         p = self.make()
@@ -331,6 +431,104 @@ class SettingsScreenTests(unittest.TestCase):
         for _ in range(len(feeds.INTERVALS)):
             p.handle(zn.K_ENTER)
         self.assertEqual(p.s['interval'], 12)
+        self.assertEqual(p.render().size, (zn.W, zn.H))
+
+
+class MyFeedsTests(unittest.TestCase):
+    FEED = {'name': 'Blog', 'short': 'Blog', 'url': 'https://b/rss'}
+
+    def make(self, probe=None, mine=()):
+        from my_feeds_ui import MyFeeds
+        self.s = {'languages': ['en'], 'categories': ['tech'], 'interval': 12,
+                  'my_feeds': list(mine)}
+        return MyFeeds(self.s, probe or (lambda url: dict(self.FEED)), spawn=lambda fn: fn())
+
+    def type(self, p, text):
+        codes = {c: k for k, c in keys.CHARS.items()}
+        for ch in text:
+            p.handle(codes[ch])
+
+    def test_add_feed(self):
+        seen = []
+        p = self.make(lambda url: seen.append(url) or dict(self.FEED))
+        p.handle(zn.K_ENTER)
+        self.assertEqual(p.state, 'input')
+        self.type(p, 'b.cxz')  # c/x/z type letters here, not arrows
+        p.handle(zn.K_BACKSPACE)
+        p.handle(keys.SHIFT + 39)  # shift+; is ':'
+        self.assertEqual(p.text, 'b.cx:')
+        p.handle(zn.K_ENTER)
+        self.assertEqual(seen, ['b.cx:'])
+        self.assertEqual((p.state, p.row), ('list', 1))
+        self.assertEqual(self.s['my_feeds'], [self.FEED])
+        self.assertEqual(p.render().size, (zn.W, zn.H))
+
+    def test_errors_and_duplicates_stay_in_input(self):
+        def bad(url):
+            raise ValueError('No RSS feed found at this address')
+        p = self.make(bad)
+        p.handle(zn.K_ENTER)
+        self.type(p, 'x.com')
+        p.handle(zn.K_ENTER)
+        self.assertEqual(p.state, 'input')
+        self.assertEqual(p.message[0], 'No RSS feed found at this address')
+        p = self.make(mine=[self.FEED])
+        p.handle(zn.K_ENTER)
+        self.type(p, 'b')
+        p.handle(zn.K_ENTER)
+        self.assertEqual(p.message[0], 'Already in My feeds')
+        self.assertEqual(len(self.s['my_feeds']), 1)
+        p.handle(zn.K_ESC)
+        self.assertEqual(p.state, 'list')
+        self.assertEqual(p.handle(zn.K_ESC), 'done')
+
+    def test_cancelled_check_is_ignored(self):
+        jobs = []
+        from my_feeds_ui import MyFeeds
+        self.s = {'my_feeds': []}
+        p = MyFeeds(self.s, lambda url: dict(self.FEED), spawn=jobs.append)
+        p.handle(zn.K_ENTER)
+        self.type(p, 'b')
+        p.handle(zn.K_ENTER)
+        self.assertEqual(p.state, 'checking')
+        p.handle(zn.K_ESC)
+        jobs[0]()
+        self.assertEqual((p.state, self.s['my_feeds']), ('input', []))
+
+    def test_delete_needs_two_presses_and_full_list(self):
+        other = dict(self.FEED, url='https://o', name='Other')
+        p = self.make(mine=[self.FEED, other])
+        p.handle(45)  # plain X moves down in the list
+        p.handle(zn.K_BACKSPACE)
+        self.assertEqual(len(self.s['my_feeds']), 2)
+        p.handle(zn.K_BACKSPACE)
+        self.assertEqual(self.s['my_feeds'], [other])
+        p.handle(zn.K_BACKSPACE)
+        p.handle(zn.K_DOWN)  # any other key cancels
+        p.handle(zn.K_BACKSPACE)
+        self.assertEqual(self.s['my_feeds'], [other])
+        full = self.make(mine=[dict(self.FEED, url=str(i)) for i in range(feeds.MAX_MY_FEEDS)])
+        full.handle(zn.K_ENTER)
+        self.assertEqual(full.state, 'list')
+        for _ in range(8):
+            full.handle(zn.K_DOWN)
+        self.assertEqual(full.top, 4)
+        self.assertEqual(full.render().size, (zn.W, zn.H))
+
+    def test_settings_opens_my_feeds(self):
+        from settings_ui import Settings, MINE
+        p = Settings({'languages': ['en'], 'categories': ['tech'], 'interval': 12, 'my_feeds': []})
+        p.row = None
+        p.handle(zn.K_DOWN)
+        self.assertEqual(p.row, MINE)
+        v = p.version
+        p.handle(zn.K_ENTER)
+        self.assertIsNotNone(p.sub)
+        self.assertNotEqual(p.version, v)
+        p.handle(zn.K_S)  # S does not close My feeds; ESC goes back to settings
+        self.assertIsNotNone(p.sub)
+        p.handle(zn.K_ESC)
+        self.assertIsNone(p.sub)
         self.assertEqual(p.render().size, (zn.W, zn.H))
 
 

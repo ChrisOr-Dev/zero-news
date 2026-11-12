@@ -11,10 +11,9 @@ Usage:
   zero_news.py --fetch            fetch once and print the headlines
   zero_news.py --preview out.png  render preview frames to PNG (from cache, or --fetch)
   zero_news.py --make-icon out.png [size]
-Keys: UP/DOWN previous/next, ENTER details, S settings, P pause, R refresh, ESC exit.
+Keys: F/X previous/next, ENTER details, S settings, P pause, R refresh, hold ESC 3s to exit.
 """
 import os
-import struct
 import sys
 import threading
 import time
@@ -23,6 +22,9 @@ from urllib.parse import urlparse
 from PIL import Image, ImageDraw
 
 import feeds
+import keys
+from keys import (K_ESC, K_BACKSPACE, K_Q, K_R, K_P, K_ENTER, K_S, K_SPACE, K_UP, K_LEFT,
+                  K_RIGHT, K_DOWN, read_keys, nav)
 from text import cjk, mono, wrap, clip_lines
 
 W, H = 320, 170
@@ -35,11 +37,8 @@ POLL = 15 * 60
 FRAME = 0.04
 FB = '/dev/fb0'
 KBD = '/dev/input/cardputer-zero-internal'
-K_ESC, K_BACKSPACE, K_Q, K_R, K_P, K_ENTER, K_S, K_SPACE = 1, 14, 16, 19, 25, 28, 31, 57
-K_UP, K_LEFT, K_RIGHT, K_DOWN = 103, 105, 106, 108
-# Per the CardputerZero key spec, plain F/Z/X/C act as arrows outside text
-# input (Fn+F/Z/X/C sends the arrow codes themselves).
-ARROW_ALIASES = {33: K_UP, 44: K_LEFT, 45: K_DOWN, 46: K_RIGHT}
+HOLD_EXIT = 3.0       # seconds ESC must be held to quit
+ESC_GRACE = 0.4       # a release shorter than this (key bounce) still counts as held
 
 BG = (12, 15, 22)
 FG = (240, 242, 246)
@@ -48,7 +47,9 @@ LINE = (38, 46, 60)
 BAND = (24, 30, 42)
 ACCENT = (110, 180, 255)
 WARN = (232, 178, 70)
-TAG_COLORS = {'TECH': (64, 200, 190), 'LIFE': (236, 112, 170), 'NEWS': (240, 150, 70)}
+EXIT = (200, 64, 56)
+TAG_COLORS = {'TECH': (64, 200, 190), 'LIFE': (236, 112, 170), 'NEWS': (240, 150, 70),
+              'MY': (170, 140, 255)}
 
 def fmt_ago(seconds):
     s = max(0, int(seconds))
@@ -98,7 +99,7 @@ def render_card(items, idx, now, paused=False, status=None):
         d.text((12, 46), 'No news yet', font=cjk(20, True), fill=FG)
         d.text((12, 78), 'Fetching feeds…' if status != 'offline' else 'Offline, retrying soon',
                font=cjk(14), fill=DIM)
-        draw_hints(d, CARD_H - 22, (('S', 'settings'), ('R', 'refresh'), ('ESC', 'exit')))
+        draw_hints(d, CARD_H - 22, (('S', 'settings'), ('R', 'refresh'), ('ESC', 'hold to exit')))
         return img
 
     item = items[idx]
@@ -179,6 +180,18 @@ def render_band(ticker, offset, progress, paused=False, hints=False):
     return img
 
 
+def render_exit(progress):
+    """The band while ESC is held: a bar filling over HOLD_EXIT seconds."""
+    img = Image.new('RGB', (W, BAND_H), BAND)
+    d = ImageDraw.Draw(img)
+    if progress > 0:
+        d.rectangle((0, 0, int(W * min(1, progress)), BAND_H), fill=EXIT)
+    left = max(0.0, HOLD_EXIT * (1 - progress))
+    d.text((W / 2, BAND_H / 2), f'Keep holding ESC to exit  {left:.1f}s', font=mono(11, True),
+           fill=FG, anchor='mm')
+    return img
+
+
 def render_detail(item, now):
     """Full text of one item as a tall W-wide image (scrolled by the caller)."""
     probe = ImageDraw.Draw(Image.new('RGB', (1, 1)))
@@ -224,47 +237,6 @@ def to_rgb565(img):
     return v.astype('<u2').tobytes()
 
 
-def make_icon(path, size=100):
-    """Launcher icon; drawn on a 100-unit grid scaled to size."""
-    k = size / 100
-    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    def box(x0, y0, x1, y1, r, fill):
-        d.rounded_rectangle(tuple(round(v * k) for v in (x0, y0, x1, y1)), radius=round(r * k), fill=fill)
-
-    box(4, 4, 96, 96, 20, BG + (255,))
-    box(18, 20, 44, 30, 3, TAG_COLORS['TECH'])
-    for i, w in enumerate((64, 56, 62)):
-        box(18, 38 + i * 11, 18 + w, 44 + i * 11, 3, FG)
-    d.rectangle(tuple(round(v * k) for v in (4, 72, 96, 84)), fill=BAND)
-    box(12, 75, 30, 81, 2, ACCENT)
-    box(36, 76, 88, 80, 2, DIM)
-    mask = Image.new('L', (size, size), 0)  # keep the band inside the rounded corners
-    ImageDraw.Draw(mask).rounded_rectangle(tuple(round(v * k) for v in (4, 4, 96, 96)),
-                                           radius=round(20 * k), fill=255)
-    out = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    out.paste(img, mask=mask)
-    out.save(path)
-
-
-def read_keys(fd):
-    """Key codes pressed since the last call, in order."""
-    if fd is None:
-        return []
-    size = struct.calcsize('llHHi')
-    try:
-        buf = os.read(fd, size * 64)
-    except BlockingIOError:
-        return []
-    pressed = []
-    for i in range(0, len(buf) - size + 1, size):
-        _, _, etype, code, value = struct.unpack_from('llHHi', buf, i)
-        if etype == 1 and value == 1:
-            pressed.append(ARROW_ALIASES.get(code, code))
-    return pressed
-
-
 class Fetcher(threading.Thread):
     """Fetches the feeds of the current settings every POLL seconds, or when woken."""
     def __init__(self):
@@ -301,6 +273,7 @@ class App:
         self.settings = settings or feeds.load_settings()
         self.items = self.load_items()
         self.idx, self.paused, self.detail, self.panel = 0, False, None, None
+        self.esc_at = self.esc_up = None  # ESC went down (main view) / was let go
         self.show(0, now)
         self.hinting = True  # key hints replace the ticker until the first change of story
 
@@ -332,7 +305,7 @@ class App:
 
     def key(self, code, now, fetcher):
         """Handle one key; returns False to quit."""
-        if self.panel:
+        if self.panel:  # gets raw codes: My feeds has text input
             if self.panel.handle(code) == 'done':
                 if self.panel.s != self.settings:
                     self.settings = self.panel.s
@@ -341,6 +314,7 @@ class App:
                     fetcher.wake.set()
                 self.close_overlay(now)
             return True
+        code = nav(code)
         if self.detail:
             tall, scroll = self.detail
             if code in (K_ESC, K_ENTER, K_BACKSPACE, K_Q):
@@ -349,9 +323,10 @@ class App:
                 step = -34 if code == K_UP else 34
                 self.detail = (tall, max(0, min(tall.height - H, scroll + step)))
             return True
-        if code in (K_ESC, K_Q):
-            return False
-        if code in (K_DOWN, K_RIGHT) and self.items:
+        if code == K_ESC:
+            self.esc_at = self.esc_at if self.esc_at is not None else now
+            self.esc_up = None
+        elif code in (K_DOWN, K_RIGHT) and self.items:
             self.show(self.idx + 1, now)
         elif code in (K_UP, K_LEFT) and self.items:
             self.show(self.idx - 1, now)
@@ -366,6 +341,18 @@ class App:
         elif code == K_R and not fetcher.busy:
             fetcher.wake.set()
         return True
+
+    def exit_progress(self, now):
+        """0..1 while ESC is held in the main view (quit at 1), else None."""
+        if keys.is_down(K_ESC):
+            self.esc_up = None
+        elif self.esc_up is None:
+            self.esc_up = now
+        if self.esc_at is None or self.panel or self.detail or \
+                (self.esc_up is not None and now - self.esc_up > ESC_GRACE):
+            self.esc_at = None
+            return None
+        return (now - self.esc_at) / HOLD_EXIT
 
     def tick(self, now):
         if self.items and not (self.paused or self.detail or self.panel) \
@@ -403,6 +390,9 @@ def run():
                     app.reload(now)
                 if not all(app.key(c, now, fetcher) for c in read_keys(kbd)):
                     break
+                hold = app.exit_progress(now)
+                if hold is not None and hold >= 1:
+                    break
                 app.tick(now)
                 overlay = app.overlay(now)
                 if overlay:
@@ -420,7 +410,10 @@ def run():
                     fb.seek(0)
                     fb.write(to_rgb565(render_card(app.items, app.idx, now, app.paused, status)))
                     app.card_key = ckey
-                if app.ticker:
+                if hold is not None:
+                    fb.seek(CARD_H * W * 2)
+                    fb.write(to_rgb565(render_exit(hold)))
+                elif app.ticker:
                     elapsed = now - app.shown_at
                     offset = 0 if app.paused else max(0, elapsed - TICKER_DELAY) * TICKER_SPEED
                     progress = 1 if app.paused else elapsed / app.interval
@@ -435,48 +428,6 @@ def run():
             fb.write(b'\x00' * (W * H * 2))
 
 
-PREVIEW_COMBOS = [('en-life', ['en'], ['life']), ('zh-life', ['zh'], ['life']),
-                  ('en-general', ['en'], ['general']), ('zh-general', ['zh'], ['general']),
-                  ('zh-tech', ['zh'], ['tech'])]
-
-
-def preview(out, fetch_now=False):
-    """Main, detail and settings frames for the saved settings, plus one main
-    frame per language/category combination. --fetch refetches every feed."""
-    from settings_ui import Settings
-    cache = feeds.load_cache()
-    if fetch_now or feeds.missing(cache, feeds.catalog()):
-        cache = feeds.refresh(feeds.catalog(), cache)
-        feeds.save_cache(cache)
-    settings, now = feeds.load_settings(), time.time()
-    stem = out.rsplit('.', 1)[0]
-
-    def frame(items, idx, offset, progress, paused=False, hints=False):
-        img = Image.new('RGB', (W, H), BG)
-        img.paste(render_card(items, idx, now, paused), (0, 0))
-        img.paste(render_band(build_ticker(items, idx), offset, progress, paused, hints or paused),
-                  (0, CARD_H))
-        return img
-
-    items = feeds.items_for(cache, feeds.selected_feeds(settings))
-    frame(items, 0, 140, 0.45).save(out)
-    frame(items, 0, 0, 0.3, hints=True).save(f'{stem}-hints.png')
-    frame(items, 0, 0, 1, paused=True).save(f'{stem}-paused.png')
-    render_card([], 0, now).save(f'{stem}-empty.png')
-    pick = next((i for i, it in enumerate(items) if len(it.get('summary', '')) > 150), 0)
-    detail_frame(render_detail(items[pick], now), 0, items[pick], now).save(f'{stem}-detail.png')
-    for name, langs, cats in PREVIEW_COMBOS:
-        combo = dict(settings, languages=langs, categories=cats)
-        got = feeds.items_for(cache, feeds.selected_feeds(combo))
-        if got:
-            frame(got, 0, 90, 0.3).save(f'{stem}-{name}.png')
-    panel = Settings(dict(settings, languages=['en', 'zh'], categories=['tech', 'life']))
-    panel.col, panel.row = 1, 1
-    panel.render().save(f'{stem}-settings.png')
-    panel.row = None
-    panel.render().save(f'{stem}-settings-interval.png')
-
-
 def main(argv):
     if '--fetch' in argv and '--preview' not in argv:
         chosen = feeds.selected_feeds(feeds.load_settings())
@@ -488,8 +439,10 @@ def main(argv):
             print('failed:', ', '.join(data['failed']))
     elif '--make-icon' in argv:
         i = argv.index('--make-icon')
+        from icon import make_icon
         make_icon(argv[i + 1], int(argv[i + 2]) if len(argv) > i + 2 else 100)
     elif '--preview' in argv:
+        from preview import preview
         preview(argv[argv.index('--preview') + 1], '--fetch' in argv)
     else:
         run()
