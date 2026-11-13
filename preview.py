@@ -5,7 +5,7 @@ from PIL import Image
 
 import feeds
 from zero_news import (W, H, CARD_H, BG, WARN, render_card, render_band, build_ticker,
-                       render_detail, detail_frame, render_exit)
+                       Detail, render_exit)
 
 
 PREVIEW_COMBOS = [('en-life', ['en'], ['life']), ('zh-life', ['zh'], ['life']),
@@ -37,7 +37,7 @@ def preview(out, fetch_now=False):
     frame(items, 0, 0, 1, paused=True).save(f'{stem}-paused.png')
     render_card([], 0, now).save(f'{stem}-empty.png')
     pick = next((i for i, it in enumerate(items) if len(it.get('summary', '')) > 150), 0)
-    detail_frame(render_detail(items[pick], now), 0, items[pick], now).save(f'{stem}-detail.png')
+    Detail(items[pick]).frame(now).save(f'{stem}-detail.png')
     for name, langs, cats in PREVIEW_COMBOS:
         combo = dict(settings, languages=langs, categories=cats)
         got = feeds.items_for(cache, feeds.selected_feeds(combo))

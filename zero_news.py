@@ -19,8 +19,9 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
+import article
 import feeds
 import keys
 from keys import (K_ESC, K_BACKSPACE, K_Q, K_R, K_P, K_ENTER, K_S, K_SPACE, K_UP, K_LEFT,
@@ -192,47 +193,86 @@ def render_exit(progress):
     return img
 
 
-def render_detail(item, now):
-    """Full text of one item as a tall W-wide image (scrolled by the caller)."""
-    probe = ImageDraw.Draw(Image.new('RGB', (1, 1)))
-    width = W - 30
-    title = wrap(probe, item['title'], cjk(18, True), width)
-    text = item.get('body') or item.get('summary') or '(no summary in feed)'
-    # One list per paragraph; paragraphs are separated by a half-line gap.
-    paras = [wrap(probe, p, cjk(14), width) for p in text.split('\n')]
-    host = urlparse(item.get('link') or '').netloc
-    total = 30 + len(title) * 24 + 6 + sum(len(p) * 19 + 8 for p in paras) + 26
-    img = Image.new('RGB', (W, max(H, total)), BG)
-    d = ImageDraw.Draw(img)
-    y = 30
-    for line in title:
-        d.text((12, y), line, font=cjk(18, True), fill=FG)
-        y += 24
-    y += 6
-    fill = FG if item.get('body') or item.get('summary') else DIM
-    for lines in paras:
-        for line in lines:
-            d.text((12, y), line, font=cjk(14), fill=fill, layout_engine=ImageFont.Layout.BASIC)
-            y += 19
-        y += 8
-    if host:
-        d.text((12, y + 6), host, font=mono(11), fill=ACCENT)
-    return img
+class Detail:
+    """One story laid out for the details view. Only the lines in view are drawn,
+    so long articles open and scroll fast."""
+
+    def __init__(self, item):
+        self.item, self.scroll, self.version = item, 0, 0
+        self.text = item.get('body') or item.get('summary') or ''
+        self.loading = False
+        self.full = None  # article text from the web page, set by the fetch thread
+        self.layout()
+
+    def layout(self):
+        probe = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+        width = W - 30
+        self.lines, y = [], 30
+        for line in wrap(probe, self.item['title'], cjk(18, True), width):
+            self.lines.append((y, line, cjk(18, True), FG))
+            y += 24
+        y += 6
+        fill = FG if self.text else DIM
+        for para in (self.text or '(no summary in feed)').split('\n'):
+            for line in wrap(probe, para, cjk(14), width):
+                self.lines.append((y, line, cjk(14), fill))
+                y += 19
+            y += 8
+        self.host_y = y
+        self.height = max(H, y + 26)
+        self.scroll = min(self.scroll, self.height - H)
+        self.version += 1
+
+    def update(self):
+        """Take the fetched article (main thread: fonts are not shared across threads)."""
+        if self.loading and self.full is not None:
+            self.loading = False
+            if len(self.full) > len(self.text):
+                self.text = self.full
+                self.layout()
+            else:
+                self.version += 1
+
+    def move(self, step):
+        self.scroll = max(0, min(self.height - H, self.scroll + step))
+
+    def frame(self, now):
+        img = Image.new('RGB', (W, H), BG)
+        d = ImageDraw.Draw(img)
+        for y, line, font, fill in self.lines:
+            y -= self.scroll
+            if 0 <= y + 24 and y < H:
+                d.text((12, y), line, font=font, fill=fill)
+        host = urlparse(self.item.get('link') or '').netloc
+        if host and self.host_y - self.scroll < H:
+            d.text((12, self.host_y + 6 - self.scroll), host, font=mono(11), fill=ACCENT)
+        d.rectangle((0, 0, W, 24), fill=BG)
+        draw_source(d, self.item, now)
+        hint = 'loading full text' if self.loading else 'F/X line  Z/C page'
+        d.text((W - 12 - d.textlength(hint, font=mono(11)), 12), hint, font=mono(11),
+               fill=ACCENT if self.loading else DIM, anchor='lm')
+        d.line((12, 24, W - 12, 24), fill=LINE)
+        if self.height > H:
+            bar = max(12, int((H - 28) * H / self.height))
+            y = 26 + int((H - 28 - bar) * self.scroll / (self.height - H))
+            d.rectangle((W - 4, y, W - 2, y + bar), fill=DIM)
+        return img
 
 
-def detail_frame(tall, scroll, item, now):
-    img = tall.crop((0, scroll, W, scroll + H))
-    d = ImageDraw.Draw(img)
-    d.rectangle((0, 0, W, 24), fill=BG)
-    draw_source(d, item, now)
-    hint = 'F/X line  Z/C page'
-    d.text((W - 12 - d.textlength(hint, font=mono(11)), 12), hint, font=mono(11), fill=DIM, anchor='lm')
-    d.line((12, 24, W - 12, 24), fill=LINE)
-    if tall.height > H:
-        bar = max(12, int((H - 28) * H / tall.height))
-        y = 26 + int((H - 28 - bar) * scroll / (tall.height - H))
-        d.rectangle((W - 4, y, W - 2, y + bar), fill=DIM)
-    return img
+ARTICLES = {}  # link -> fetched article text ('' if the page had none), oldest first
+ARTICLE_CACHE = 30
+
+
+def fetch_article(det, link):
+    """Thread: fetch the story's web page and hand its text to the details view."""
+    try:
+        text = article.fetch(link)
+    except Exception:
+        text = ''
+    ARTICLES[link] = text
+    while len(ARTICLES) > ARTICLE_CACHE:
+        ARTICLES.pop(next(iter(ARTICLES)))
+    det.full = text
 
 
 def to_rgb565(img):
@@ -321,12 +361,10 @@ class App:
             return True
         code = nav(code)
         if self.detail:
-            tall, scroll = self.detail
             if code in (K_ESC, K_ENTER, K_BACKSPACE, K_Q):
                 self.close_overlay(now)
             elif code in (K_UP, K_DOWN, K_LEFT, K_RIGHT):
-                step = {K_UP: -34, K_DOWN: 34, K_LEFT: -(H - 50), K_RIGHT: H - 50}[code]
-                self.detail = (tall, max(0, min(tall.height - H, scroll + step)))
+                self.detail.move({K_UP: -34, K_DOWN: 34, K_LEFT: -(H - 50), K_RIGHT: H - 50}[code])
             return True
         if code == K_ESC:
             self.esc_at = self.esc_at if self.esc_at is not None else now
@@ -336,7 +374,7 @@ class App:
         elif code in (K_UP, K_LEFT) and self.items:
             self.show(self.idx - 1, now)
         elif code == K_ENTER and self.items:
-            self.detail = (render_detail(self.items[self.idx], now), 0)
+            self.open_detail()
         elif code == K_S:
             from settings_ui import Settings
             self.panel = Settings(self.settings)
@@ -346,6 +384,18 @@ class App:
         elif code == K_R and not fetcher.busy:
             fetcher.wake.set()
         return True
+
+    def open_detail(self):
+        """Details view with the feed's text now and the web page's text when fetched."""
+        item = self.items[self.idx]
+        det = self.detail = Detail(item)
+        link = item.get('link')
+        if link in ARTICLES:
+            det.loading, det.full = True, ARTICLES[link]
+            det.update()
+        elif link:
+            det.loading = True
+            threading.Thread(target=fetch_article, args=(det, link), daemon=True).start()
 
     def exit_progress(self, now):
         """0..1 while ESC is held in the main view (quit at 1), else None."""
@@ -369,9 +419,9 @@ class App:
         if self.panel:
             return ('s', self.panel.version), self.panel.render
         if self.detail:
-            item = self.items[self.idx]
-            return ('d', id(self.detail[0]), self.detail[1]), \
-                lambda: detail_frame(*self.detail, item, now)
+            det = self.detail
+            det.update()
+            return ('d', id(det), det.version, det.scroll, det.loading), lambda: det.frame(now)
         return None
 
 

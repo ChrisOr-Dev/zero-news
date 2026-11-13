@@ -33,12 +33,13 @@ As the CardputerZero key spec recommends, plain F / Z / X / C work as arrow keys
 | Screen | Key | Action |
 |--------|-----|--------|
 | Main | F / X (or Fn+F / Fn+X) | Previous / next headline |
-| Main | OK (ENTER) | Full summary |
+| Main | OK (ENTER) | Full story (the feed text at once, then the article page fetched in the background) |
 | Main | P / SPACE | Pause rotation |
 | Main | R | Refresh now |
 | Main | S | Settings |
 | Main | Hold ESC 3 s | Exit (a bar shows the countdown; let go to cancel) |
-| Details | F / X | Scroll |
+| Details | F / X | Scroll a line |
+| Details | Z / C | Scroll a page |
 | Details | ESC / OK | Back |
 | Settings | F / Z / X / C | Move up / left / down / right (Z / C change the rotation speed) |
 | Settings | OK / SPACE | Toggle, or open My feeds |

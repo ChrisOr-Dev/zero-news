@@ -35,16 +35,33 @@ def mono(size, bold=False):
 
 
 # Latin words (with trailing space) stay whole; CJK and anything else breaks per character.
+# CJK punctuation that must not start a line: it stays on the line before, a few px over.
+NO_LINE_START = set('，。、；：！？）」』》〉】〕…,.;:!?)')
 TOKEN = re.compile(r"[A-Za-z0-9À-ɏ'’\-_.,:;!?%$&@#/+()\"“”]+ *| +|.")
+
+
+_widths = {}
+
+
+def _width(font, s):
+    """Advance width of s, cached: measuring is slow on the device and articles
+    repeat the same characters and words."""
+    key = (id(font), s)
+    w = _widths.get(key)
+    if w is None:
+        if len(_widths) > 50_000:
+            _widths.clear()
+        w = _widths[key] = font.getlength(s)
+    return w
 
 
 def wrap(d, text, font, width):
     """Lines of text that fit width, breaking between words or CJK characters."""
-    lines, cur = [], ''
+    lines, cur, cur_w = [], '', 0.0
     for tok in TOKEN.findall(text):
-        trial = cur + tok
-        if d.textlength(trial.rstrip(), font=font) <= width:
-            cur = trial
+        if cur_w + _width(font, tok.rstrip()) <= width or (tok in NO_LINE_START and cur.strip()):
+            cur += tok
+            cur_w += _width(font, tok)
             continue
         if cur.strip():
             lines.append(cur.rstrip())
@@ -55,6 +72,7 @@ def wrap(d, text, font, width):
                 cut -= 1
             lines.append(cur[:cut])
             cur = cur[cut:]
+        cur_w = _width(font, cur)
     if cur.strip():
         lines.append(cur.rstrip())
     return lines

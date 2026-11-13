@@ -3,6 +3,7 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 
+import article
 import feeds
 import keys
 import zero_news as zn
@@ -230,6 +231,15 @@ class TextTests(unittest.TestCase):
         for line in lines:
             self.assertLessEqual(self.d.textlength(line, font=self.f), 120)
 
+    def test_wrap_keeps_cjk_punctuation_off_line_starts(self):
+        text = '天文台發出特別天氣提示，指雨區正逐漸靠近。預料未來數小時本港雨勢有時頗大，提醒市民。' * 3
+        for width in range(100, 200, 7):
+            lines = zn.wrap(self.d, text, self.f, width)
+            self.assertEqual(''.join(lines), text)
+            for line in lines:
+                self.assertNotIn(line[0], '，。')
+                self.assertLessEqual(self.d.textlength(line, font=self.f), width + 16)
+
     def test_clip_lines_adds_ellipsis(self):
         lines, cut = zn.clip_lines(self.d, 'word ' * 60, self.f, 150, 2)
         self.assertTrue(cut)
@@ -243,6 +253,18 @@ class TextTests(unittest.TestCase):
 
 
 class AppTests(unittest.TestCase):
+    def setUp(self):
+        # Details views fetch the web page in a thread: no network in tests.
+        self.started = []
+        patcher = mock.patch.object(zn.threading, 'Thread', side_effect=self.thread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        zn.ARTICLES.clear()
+
+    def thread(self, target, args, daemon):
+        self.started.append((target, args))
+        return mock.Mock()
+
     def make(self, n=3):
         items = [item(f'h{k}', 1000 - k, summary='s' * 200 if k == 1 else '') for k in range(n)]
         settings = {'languages': ['en'], 'categories': ['tech'], 'interval': 10}
@@ -284,18 +306,17 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.idx, 1)
         app.items[1]['body'] = 'para one\n' + 'word ' * 600
         app.key(zn.K_ENTER, 0, f)
-        self.assertIsNotNone(app.detail)
-        tall = app.detail[0]
-        self.assertGreater(tall.height, 3 * zn.H)  # body, not the short summary
+        det = app.detail
+        self.assertGreater(det.height, 3 * zn.H)  # body, not the short summary
         app.key(zn.K_RIGHT, 0, f)  # page down
-        self.assertEqual(app.detail[1], zn.H - 50)
+        self.assertEqual(det.scroll, zn.H - 50)
         app.key(zn.K_UP, 0, f)
-        self.assertEqual(app.detail[1], zn.H - 84)
+        self.assertEqual(det.scroll, zn.H - 84)
         for _ in range(100):
             app.key(zn.K_RIGHT, 0, f)
-        self.assertEqual(app.detail[1], tall.height - zn.H)  # clamped at the end
+        self.assertEqual(det.scroll, det.height - zn.H)  # clamped at the end
         app.key(zn.K_LEFT, 0, f)
-        self.assertEqual(app.detail[1], tall.height - zn.H - (zn.H - 50))
+        self.assertEqual(det.scroll, det.height - zn.H - (zn.H - 50))
         app.tick(1000)  # no auto-advance while reading
         self.assertEqual(app.idx, 1)
         app.key(zn.K_ESC, 0, f)
@@ -384,8 +405,85 @@ class AppTests(unittest.TestCase):
                          (zn.W, zn.BAND_H))
         self.assertEqual(band.size, (zn.W, zn.BAND_H))
         self.assertEqual(len(zn.to_rgb565(band)), zn.W * zn.BAND_H * 2)
-        tall = zn.render_detail(app.items[1], 2000)
-        self.assertEqual(zn.detail_frame(tall, 0, app.items[1], 2000).size, (zn.W, zn.H))
+        self.assertEqual(zn.Detail(app.items[1]).frame(2000).size, (zn.W, zn.H))
+
+    def test_details_fetch_full_article(self):
+        app, f = self.make(), mock.Mock(busy=False)
+        app.key(zn.K_DOWN, 0, f)
+        app.key(zn.K_ENTER, 0, f)
+        det = app.detail
+        self.assertTrue(det.loading)
+        self.assertEqual(det.text, 's' * 200)  # feed text shown at once
+        [(target, args)] = self.started
+        self.assertEqual(args, (det, 'https://x/h1'))
+        before = app.overlay(0)[0]
+        with mock.patch.object(zn.article, 'fetch', return_value='Full one\nFull two ' * 50):
+            target(*args)
+        after = app.overlay(0)[0]
+        self.assertNotEqual(before, after)  # redrawn
+        self.assertFalse(det.loading)
+        self.assertTrue(det.text.startswith('Full one'))
+        self.assertGreater(det.height, zn.H * 2)
+        app.key(zn.K_ESC, 0, f)
+        app.key(zn.K_ENTER, 0, f)  # second open uses the cached text, no new fetch
+        self.assertEqual(len(self.started), 1)
+        self.assertFalse(app.detail.loading)
+        self.assertTrue(app.detail.text.startswith('Full one'))
+
+    def test_details_keep_feed_text_when_page_is_poorer(self):
+        app, f = self.make(), mock.Mock(busy=False)
+        app.key(zn.K_DOWN, 0, f)
+        app.key(zn.K_ENTER, 0, f)
+        target, args = self.started[0]
+        with mock.patch.object(zn.article, 'fetch', side_effect=OSError('offline')):
+            target(*args)
+        app.overlay(0)
+        self.assertFalse(app.detail.loading)
+        self.assertEqual(app.detail.text, 's' * 200)
+        self.assertEqual(zn.ARTICLES, {'https://x/h1': ''})
+
+
+class ArticleTests(unittest.TestCase):
+    def test_paragraphs_inside_article(self):
+        page = ('<html><head><title>Big news - Site</title><script>var x = "<p>no</p>";</script></head>'
+                '<body><nav><p>Home | World | Sports menu</p></nav><p>Outside text that is long enough.</p>'
+                '<article><h1>Big news</h1><p>First <b>para</b> of the story, long enough to keep.</p>'
+                '<p>Advertisement</p><p>Short</p>'
+                '<p>Second para of the story, also long enough to keep here. ' + 'x ' * 80 + '</p>'
+                '<p>Second para of the story, also long enough to keep here. ' + 'x ' * 80 + '</p>'
+                '<p>Already a subscriber? Log in.</p></article><footer><p>Copyright 2026 Site</p></footer>')
+        paras = article.extract(page).split('\n')
+        self.assertEqual(len(paras), 2)
+        self.assertEqual(paras[0], 'First para of the story, long enough to keep.')
+        self.assertTrue(paras[1].startswith('Second para'))
+
+    def test_text_without_p_tags(self):
+        page = ('<title>天文台提示 - RTHK</title><div class="itemFullText">'
+                '天文台發出特別天氣提示，指雨區正逐漸靠近，預料未來數小時本港雨勢有時頗大。<br><br>'
+                '市民應留意天氣變化，並避免前往低窪地區，如有需要應及早採取預防措施。<br>'
+                '<a href="x.jpg" title="圖片">天文台提示</a></div>' + '<div>menu</div>' * 3)
+        self.assertEqual(article.extract(page).split('\n'), [
+            '天文台發出特別天氣提示，指雨區正逐漸靠近，預料未來數小時本港雨勢有時頗大。',
+            '市民應留意天氣變化，並避免前往低窪地區，如有需要應及早採取預防措施。'])
+
+    def test_inline_tags_leave_no_gaps(self):
+        page = '<article><p>A lawsuit (which <a href="#">you settled</a>) and <em>more</em> text here.</p></article>'
+        self.assertEqual(article.extract(page), 'A lawsuit (which you settled) and more text here.')
+
+    def test_page_url_and_decode(self):
+        self.assertEqual(article.page_url('https://a.hk/x/%e5%9d%a6" target="blank'),
+                         'https://a.hk/x/%e5%9d%a6')
+        self.assertEqual(article.page_url(' https://b.com/新聞/1?q=a b'), 'https://b.com/%E6%96%B0%E8%81%9E/1?q=a')
+        self.assertEqual(article.decode('中文'.encode('big5'), 'text/html; charset=big5'), '中文')
+        self.assertEqual(article.decode(b'<meta charset="utf-8">\xe4\xb8\xad'), '<meta charset="utf-8">中')
+        self.assertEqual(article.decode(b'ok', 'text/html; charset=bogus'), 'ok')
+
+    def test_long_text_is_capped(self):
+        page = '<article>' + '<p>' + 'word ' * 400 + '</p>' * 1 + ''.join(
+            f'<p>{k} ' + 'more words here ' * 30 + '</p>' for k in range(20)) + '</article>'
+        text = article.extract(page)
+        self.assertEqual(len(text), article.MAX_TEXT)
+        self.assertTrue(text.endswith('…'))
 
 
 class KeyTests(unittest.TestCase):
