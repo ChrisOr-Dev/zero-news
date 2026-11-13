@@ -247,8 +247,12 @@ class Detail:
         if host and self.host_y - self.scroll < H:
             d.text((12, self.host_y + 6 - self.scroll), host, font=mono(11), fill=ACCENT)
         d.rectangle((0, 0, W, 24), fill=BG)
-        draw_source(d, self.item, now)
-        hint = 'loading full text' if self.loading else '↑ ↓ line  ← → page'
+        used = draw_source(d, self.item, now)
+        # Longest hint that fits beside the source name and age.
+        hints = ('loading full text', 'loading…') if self.loading else \
+            ('↑ ↓ line  ← → page', '↑ ↓  ← →')
+        hint = next((h for h in hints if W - 12 - d.textlength(h, font=mono(11)) >= used + 10),
+                    hints[-1])
         d.text((W - 12 - d.textlength(hint, font=mono(11)), 12), hint, font=mono(11),
                fill=ACCENT if self.loading else DIM, anchor='lm')
         d.line((12, 24, W - 12, 24), fill=LINE)
