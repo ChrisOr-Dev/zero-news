@@ -12,10 +12,10 @@ CJK_INDEX = 4  # Noto Sans CJK HK
 _fonts = {}
 
 
-def _load(paths, size, index=0):
+def _load(paths, size, index=0, **kw):
     for p in paths:
         if os.path.exists(p):
-            return ImageFont.truetype(p, size, index=index)
+            return ImageFont.truetype(p, size, index=index, **kw)
     return ImageFont.load_default(size)
 
 
@@ -30,7 +30,8 @@ def mono(size, bold=False):
     key = ('mb' if bold else 'm', size)
     if key not in _fonts:
         name = 'JetBrainsMono-Bold.ttf' if bold else 'JetBrainsMono-Regular.ttf'
-        _fonts[key] = _load([f'{APP_FONTS}/{name}'], size)
+        # Basic layout: no ligatures, so key hints like '↑↓' and '←→' stay two arrows.
+        _fonts[key] = _load([f'{APP_FONTS}/{name}'], size, layout_engine=ImageFont.Layout.BASIC)
     return _fonts[key]
 
 

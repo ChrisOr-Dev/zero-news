@@ -11,7 +11,7 @@ Usage:
   zero_news.py --fetch            fetch once and print the headlines
   zero_news.py --preview out.png  render preview frames to PNG (from cache, or --fetch)
   zero_news.py --make-icon out.png [size]
-Keys: F/X previous/next, ENTER details (F/X line, Z/C page), S settings, P pause, R refresh, hold ESC 3s to exit.
+Keys: F/X previous/next, ENTER details (up/down a line, left/right a page), S settings, P pause, R refresh, hold ESC 3s to exit.
 """
 import os
 import sys
@@ -169,7 +169,7 @@ def render_band(ticker, offset, progress, paused=False, hints=False):
     if progress > 0:
         d.rectangle((0, 0, int(W * min(1, progress)), 1), fill=DIM if paused else ACCENT)
     if hints:
-        draw_hints(d, 3, (('F/X', 'prev/next'), ('OK', 'read'),
+        draw_hints(d, 3, (('↑ ↓', 'prev/next'), ('OK', 'read'),
                           ('P', 'resume' if paused else 'pause'), ('S', 'settings')))
         return img
     view = W - LABEL_W
@@ -248,7 +248,7 @@ class Detail:
             d.text((12, self.host_y + 6 - self.scroll), host, font=mono(11), fill=ACCENT)
         d.rectangle((0, 0, W, 24), fill=BG)
         draw_source(d, self.item, now)
-        hint = 'loading full text' if self.loading else 'F/X line  Z/C page'
+        hint = 'loading full text' if self.loading else '↑ ↓ line  ← → page'
         d.text((W - 12 - d.textlength(hint, font=mono(11)), 12), hint, font=mono(11),
                fill=ACCENT if self.loading else DIM, anchor='lm')
         d.line((12, 24, W - 12, 24), fill=LINE)

@@ -38,8 +38,8 @@ As the CardputerZero key spec recommends, plain F / Z / X / C work as arrow keys
 | Main | R | Refresh now |
 | Main | S | Settings |
 | Main | Hold ESC 3 s | Exit (a bar shows the countdown; let go to cancel) |
-| Details | F / X | Scroll a line |
-| Details | Z / C | Scroll a page |
+| Details | ↑ / ↓ (F / X) | Scroll a line |
+| Details | ← / → (Z / C) | Scroll a page |
 | Details | ESC / OK | Back |
 | Settings | F / Z / X / C | Move up / left / down / right (Z / C change the rotation speed) |
 | Settings | OK / SPACE | Toggle, or open My feeds |
