@@ -16,7 +16,8 @@ APP=$ROOT/usr/share/$PKG
 L=$ROOT/usr/share/APPLaunch
 mkdir -p "$APP" "$L/bin" "$L/applications" "$L/share/images" "$ROOT/DEBIAN"
 
-install -m 644 zero_news.py feeds.py article.py text.py keys.py icon.py settings_ui.py my_feeds_ui.py preview.py "$APP/"
+install -m 644 zero_news.py feeds.py article.py text.py keys.py icon.py settings_ui.py my_feeds_ui.py preview.py \
+    net.py "$APP/"
 printf '#!/bin/sh\nexec /usr/bin/python3 /usr/share/%s/zero_news.py "$@"\n' "$PKG" > "$L/bin/$PKG"
 chmod 755 "$L/bin/$PKG"
 install -m 644 zero-news.desktop "$L/applications/$PKG.desktop"

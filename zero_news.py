@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw
 import article
 import feeds
 import keys
+import net
 from keys import (K_ESC, K_BACKSPACE, K_Q, K_R, K_P, K_ENTER, K_S, K_SPACE, K_UP, K_LEFT,
                   K_RIGHT, K_DOWN, read_keys, nav)
 from text import cjk, mono, wrap, clip_lines
@@ -488,6 +489,7 @@ def run():
 
 
 def main(argv):
+    net.prefer_ipv4()
     if '--fetch' in argv and '--preview' not in argv:
         chosen = feeds.selected_feeds(feeds.load_settings())
         data = feeds.refresh(chosen, feeds.load_cache())
