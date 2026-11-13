@@ -11,7 +11,7 @@ Usage:
   zero_news.py --fetch            fetch once and print the headlines
   zero_news.py --preview out.png  render preview frames to PNG (from cache, or --fetch)
   zero_news.py --make-icon out.png [size]
-Keys: F/X previous/next, ENTER details, S settings, P pause, R refresh, hold ESC 3s to exit.
+Keys: F/X previous/next, ENTER details (F/X line, Z/C page), S settings, P pause, R refresh, hold ESC 3s to exit.
 """
 import os
 import sys
@@ -19,7 +19,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 import feeds
 import keys
@@ -197,9 +197,11 @@ def render_detail(item, now):
     probe = ImageDraw.Draw(Image.new('RGB', (1, 1)))
     width = W - 30
     title = wrap(probe, item['title'], cjk(18, True), width)
-    body = wrap(probe, item.get('summary') or '(no summary in feed)', cjk(14), width)
+    text = item.get('body') or item.get('summary') or '(no summary in feed)'
+    # One list per paragraph; paragraphs are separated by a half-line gap.
+    paras = [wrap(probe, p, cjk(14), width) for p in text.split('\n')]
     host = urlparse(item.get('link') or '').netloc
-    total = 30 + len(title) * 24 + 6 + len(body) * 19 + 26
+    total = 30 + len(title) * 24 + 6 + sum(len(p) * 19 + 8 for p in paras) + 26
     img = Image.new('RGB', (W, max(H, total)), BG)
     d = ImageDraw.Draw(img)
     y = 30
@@ -207,9 +209,12 @@ def render_detail(item, now):
         d.text((12, y), line, font=cjk(18, True), fill=FG)
         y += 24
     y += 6
-    for line in body:
-        d.text((12, y), line, font=cjk(14), fill=FG if item.get('summary') else DIM)
-        y += 19
+    fill = FG if item.get('body') or item.get('summary') else DIM
+    for lines in paras:
+        for line in lines:
+            d.text((12, y), line, font=cjk(14), fill=fill, layout_engine=ImageFont.Layout.BASIC)
+            y += 19
+        y += 8
     if host:
         d.text((12, y + 6), host, font=mono(11), fill=ACCENT)
     return img
@@ -220,7 +225,7 @@ def detail_frame(tall, scroll, item, now):
     d = ImageDraw.Draw(img)
     d.rectangle((0, 0, W, 24), fill=BG)
     draw_source(d, item, now)
-    hint = 'F/X scroll  ESC'
+    hint = 'F/X line  Z/C page'
     d.text((W - 12 - d.textlength(hint, font=mono(11)), 12), hint, font=mono(11), fill=DIM, anchor='lm')
     d.line((12, 24, W - 12, 24), fill=LINE)
     if tall.height > H:
@@ -319,8 +324,8 @@ class App:
             tall, scroll = self.detail
             if code in (K_ESC, K_ENTER, K_BACKSPACE, K_Q):
                 self.close_overlay(now)
-            elif code in (K_UP, K_DOWN):
-                step = -34 if code == K_UP else 34
+            elif code in (K_UP, K_DOWN, K_LEFT, K_RIGHT):
+                step = {K_UP: -34, K_DOWN: 34, K_LEFT: -(H - 50), K_RIGHT: H - 50}[code]
                 self.detail = (tall, max(0, min(tall.height - H, scroll + step)))
             return True
         if code == K_ESC:

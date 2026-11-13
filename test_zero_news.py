@@ -64,6 +64,26 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(len(s), feeds.SUMMARY_MAX)
         self.assertTrue(s.endswith('…'))
 
+    def test_full_text_body(self):
+        raw = RSS.replace(b'</description>\n<pubDate>Thu, 12 Nov 2026 10:00:00',
+                          b'</description>\n<content:encoded><![CDATA[<p>First &amp; para</p>'
+                          b'<figure><img src="x"/><figcaption>Cap</figcaption></figure>'
+                          b'<p>Second<br/>line</p>]]></content:encoded>\n'
+                          b'<pubDate>Thu, 12 Nov 2026 10:00:00', 1)
+        raw = raw.replace(b'<rss version="2.0">',
+                          b'<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">')
+        items = feeds.parse_feed(raw, FEED)
+        self.assertEqual(items[1]['body'], 'First & para\nCap\nSecond\nline')
+        self.assertEqual(items[1]['summary'], 'Some bold text')  # card text unchanged
+        self.assertNotIn('body', items[0])
+        atom = ATOM.replace(b'</summary>', b'</summary><content type="html">&lt;p&gt;Hello world, '
+                            b'and the rest&lt;/p&gt;</content>')
+        self.assertEqual(feeds.parse_feed(atom, FEED)[0]['body'], 'Hello world, and the rest')
+        self.assertNotIn('body', feeds.parse_feed(ATOM, FEED)[0])  # nothing longer than summary
+        long = feeds.clean_body('<p>' + 'w ' * 3000 + '</p>')
+        self.assertEqual(len(long), feeds.BODY_MAX)
+        self.assertTrue(long.endswith('…'))
+
     def test_naive_date_uses_feed_offset(self):
         self.assertEqual(feeds.parse_date('2026-11-13  08:11:00', 8),
                          feeds.parse_date('Fri, 13 Nov 2026 00:11:00 GMT'))
@@ -262,8 +282,20 @@ class AppTests(unittest.TestCase):
         app.key(zn.K_DOWN, 0, f)
         app.key(zn.K_DOWN, 0, f)
         self.assertEqual(app.idx, 1)
+        app.items[1]['body'] = 'para one\n' + 'word ' * 600
         app.key(zn.K_ENTER, 0, f)
         self.assertIsNotNone(app.detail)
+        tall = app.detail[0]
+        self.assertGreater(tall.height, 3 * zn.H)  # body, not the short summary
+        app.key(zn.K_RIGHT, 0, f)  # page down
+        self.assertEqual(app.detail[1], zn.H - 50)
+        app.key(zn.K_UP, 0, f)
+        self.assertEqual(app.detail[1], zn.H - 84)
+        for _ in range(100):
+            app.key(zn.K_RIGHT, 0, f)
+        self.assertEqual(app.detail[1], tall.height - zn.H)  # clamped at the end
+        app.key(zn.K_LEFT, 0, f)
+        self.assertEqual(app.detail[1], tall.height - zn.H - (zn.H - 50))
         app.tick(1000)  # no auto-advance while reading
         self.assertEqual(app.idx, 1)
         app.key(zn.K_ESC, 0, f)

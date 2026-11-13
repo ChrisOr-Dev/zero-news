@@ -20,6 +20,7 @@ TIMEOUT = 20
 PER_FEED = 12
 MAX_ITEMS = 80
 SUMMARY_MAX = 400
+BODY_MAX = 4000  # full article text from content:encoded / Atom content
 
 LANGUAGES = ['en', 'zh']
 CATEGORIES = ['tech', 'life', 'general']
@@ -143,6 +144,22 @@ def clean_text(s):
     return re.sub(r'\s+', ' ', s).strip()
 
 
+BLOCK_END = re.compile(r'<\s*(?:br|/p|/div|/li|/h[1-6]|/blockquote|/figcaption)\b[^>]*>', re.I)
+
+
+def clean_body(s):
+    """Plain text with paragraphs kept (one per line) from an HTML article body."""
+    if not s:
+        return ''
+    s = html.unescape(s)
+    s = BLOCK_END.sub('\n', s)
+    paras = [clean_text(p) for p in s.split('\n')]
+    body = '\n'.join(p for p in paras if p)
+    if len(body) > BODY_MAX:
+        body = body[:BODY_MAX - 1].rstrip() + '…'
+    return body
+
+
 def parse_date(s, tz_hours=0):
     """Unix time from an RFC 822 or ISO 8601 date, or None."""
     if not s:
@@ -206,6 +223,7 @@ def parse_feed(raw, feed):
             summary = ''  # hnrss puts only links here
         if len(summary) > SUMMARY_MAX:
             summary = summary[:SUMMARY_MAX - 1].rstrip() + '…'
+        body = clean_body(_text(e, 'encoded', 'content'))
         ts = parse_date(_text(e, 'pubDate', 'published', 'updated', 'date'), tz)
         if ts and ts > now + 3600:
             ts = None  # scheduled post with a far-future date: treat as undated
@@ -218,6 +236,8 @@ def parse_feed(raw, feed):
             'short': feed['short'],
             'tag': TAGS.get(feed.get('cat'), 'NEWS'),
         })
+        if len(body) > len(summary):
+            items[-1]['body'] = body
     items.sort(key=lambda i: i['ts'] or 0, reverse=True)
     return items
 
